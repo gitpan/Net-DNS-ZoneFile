@@ -1,0 +1,34 @@
+
+This is Net::DNS::ZoneFile, a module to help you usefully parse a
+DNS zone file into the Net::DNS::RR objects that it contains.
+
+(c) 2002 Luis E. Munoz <luismunoz@cpan.org>
+
+This software can be used under the same terms as perl itself. It also
+carries the same warranties.
+
+To install,
+
+	perl Makefile.PL
+	make
+	make test
+	make install
+
+The $ORIGIN, $TTL and $GENERATE directives are fully supported.
+
+Not all RR classes are supported, but most common ones are.
+
+The author is glad to provide support to this module as his time
+permits. Please send bug reports (or patches) as well as feedback and
+suggestions to
+
+luismunoz@cpan.org
+
+When submitting parsing bugs, it is very important that you include
+the shortest zone file that triggers the bug. This is probably the
+fastest way to get help.
+
+This module was developed under Perl 5.6.0. Earlier perls will require
+you to manually modify the module, removing our-declarations.
+
+
