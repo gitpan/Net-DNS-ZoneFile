@@ -1,9 +1,11 @@
 # This is -*- perl -*-
 
-use Net::DNS::ZoneFile;
 use IO::File;
+use Net::DNS;
+use Net::DNS::RR;
+use Net::DNS::ZoneFile;
 
-use Test::More tests => 3;
+use Test::More tests => 5;
 
 END {
     unlink "./read.txt";
@@ -11,19 +13,7 @@ END {
 
 #$Net::DNS::ZoneFile::Debug = 1;
 
-my $zone = q{
-; This is a real zone, changed to protect the innocent
-;
-$ORIGIN 10.10.10.in-addr.arpa.
-;
-    @	30 IN	SOA	dns1.acme.com.		hostmaster.acme.com. (
-
-	2002040300   ; Serial Number
- 	    172800   ; Refresh	48 hours
-	      3600   ; Retry	 1 hours
-	   1728000   ; Expire	20  days
-	    172800 ) ; Minimum	48 hours
-};
+my $zone = q{a.com. 30 IN SOA dns1.a.com. hostmaster.a.com. (1 1 1 1 1)};
 
 ok(defined Net::DNS::ZoneFile->parse(\$zone), "parse of the test zone");
 
@@ -42,5 +32,21 @@ ok(defined Net::DNS::ZoneFile->readfh($fh), 'readfh');
 $fh->close;
 
 ok(defined Net::DNS::ZoneFile->read("./read.txt"), 'read');
+
+my $rrset = Net::DNS::ZoneFile->read("./read.txt");
+
+ok(defined $rrset, 're-read');
+
+die unless defined $rrset;
+
+my $rr = new Net::DNS::RR $zone;
+
+ok($rr->string eq $rrset->[0]->string, "RR comparison");
+
+
+
+
+
+
 
 

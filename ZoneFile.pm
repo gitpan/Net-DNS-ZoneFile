@@ -8,7 +8,7 @@ use IO::File;
 use NetAddr::IP;
 use Net::DNS::RR;
 
-our $VERSION = '1.00';
+our $VERSION = '1.02';
 our $Debug = 0;
 				# Uncomment this if you want to
 				# avoid Parse::RecDescent error
@@ -112,7 +112,7 @@ sub _parse ($$) {
 	       s/
 	       \A\$GENERATE \s+ 
 	       (\d+) \s* - \s* (\d+) \s+ 
-	       (|\*|@|\.|([-\w\$\d]+(\.[-\w\$\d]+)*\.?)) \s+
+	       (|\*|\@|\.|([-\w\$\d]+(\.[-\w\$\d]+)*\.?)) \s+
 	       ((IN|HESIOD|CHAOS) \s+)?
 	       (\w+) \s+ 
 	       ([-\w\$\d]+((\.[-\w\$\d]+)*)?\.) \s*$
@@ -128,24 +128,40 @@ sub _parse ($$) {
 	}
 	elsif ($text =~		# SOA
 	       s/
-	       \A(|\*|\s*@|\.|([-\w\d]+(\.[-\w\d]+)*\.?))
-	       \s+ ((IN|HESIOD|CHAOS) \s+)?
+	       \A(|\*|\s*\@|\.|([-\w\d]+(\.[-\w\d]+)*\.?))
+	       \s+ ((\d+|IN|HESIOD|CHAOS) \s+)? ((\d+|IN|HESIOD|CHAOS) \s+)?
 	       (SOA) \s+ ([-\w\d]+(\.[-\w\d]+)*\.) 
 	       \s+ ([-\w\d]+(\.[-\w\d]+)*\.) \s* \(
-	       \s* (\d+) \s+ (\d+) \s+ (\d+) \s+ (\d+) \s+ (\d+) \s+ \) \s*$
+	       \s* (\d+) \s+ (\d+) \s+ (\d+) \s+ (\d+) \s+ (\d+) \s* \) \s*$
 	       //mxi)
 	{
 	    my $name	= $1;
-	    my $class	= $5 || 'IN';
-	    my $type	= $6;
-	    my $host	= $7;
-	    my $admin	= $9;
-	    my $d1	= $11;
-	    my $d2	= $12;
-	    my $d3	= $13;
-	    my $d4	= $14;
-	    my $d5	= $15;
-	    my $ttl	= $d5;
+	    my $type	= $8;
+	    my $host	= $9;
+	    my $admin	= $11;
+	    my $d1	= $13;
+	    my $d2	= $14;
+	    my $d3	= $15;
+	    my $d4	= $16;
+	    my $d5	= $17;
+
+	    my $ct1 = $5;
+	    my $ct2 = $7;
+	    my ($class,$ttl);
+	    if (defined $ct1) {
+		if ($ct1 =~ /^\d+$/) {
+		    $ttl = $ct1;
+		    return undef if defined($ct2) && $ct2 =~ /^\d+$/;
+		    $class = $ct2 || 'IN';
+		} else {
+		    $class = $ct1;
+		    return undef if defined($ct2) && $ct2 !~ /^\d+$/;
+		    $ttl = defined($ct2) ? $ct2 : $d5;
+		}
+	    } else {
+		$ttl = $d5;
+		$class = 'IN';
+	    }
 
 	    $SoaTTL = $ttl;
 
@@ -173,19 +189,36 @@ sub _parse ($$) {
 	}
 	elsif ($text =~		# PTR, CNAME or NS
 	       s/
-	       \A(|\*|\s*@|\.|([-\w\d]+(\.[-\w\d]+)*\.?))
-	       \s+ ((\d+) \s+)? ((IN|HESIOD|CHAOS)\s+)?
-	       (PTR|NS|CNAME) \s+ ([-\w\d]+((\.[-\w\d]+)*)?\.?) \s*$
+ 	       \A(|\*|\s*\@|\.|([-\w\d]+(\.[-\w\d]+)*\.?))
+ 	       \s+ ((\d+|IN|HESIOD|CHAOS)\s+)? ((\d+|IN|HESIOD|CHAOS)\s+)?
+	       (PTR|NS|CNAME) \s+ ([-\w\d]+((\.[-\w\d]+)*)?\.?|@) \s*$
 	       //mxi)
 	{
 	    my $name	= $1;
-	    my $ttl	= length($5) ? $5 : $GlobalTTL || $SoaTTL;
-	    my $class	= $7 || 'IN';
 	    my $type	= $8;
 	    my $data	= $9;
 
+ 	    my $ct1 = $5;
+ 	    my $ct2 = $7;
+ 	    my ($class,$ttl);
+ 	    if (defined $ct1) {
+ 		if ($ct1 =~ /^\d+$/) {
+ 		    $ttl = $ct1;
+ 		    return undef if defined($ct2) && $ct2 =~ /^\d+$/;
+ 		    $class = $ct2 || 'IN';
+ 		} else {
+ 		    $class = $ct1;
+ 		    return undef if defined($ct2) && $ct2 !~ /^\d+$/;
+ 		    $ttl = defined($ct2) ? $ct2 : $GlobalTTL || $SoaTTL;
+ 		}
+ 	    } else {
+ 		$ttl = $GlobalTTL || $SoaTTL;
+ 		$class = 'IN';
+ 	    }
+ 
 	    $name = $Last if not length $name;
 	    $name = $Origin if $name =~ m/\s*\@$/;
+	    $data = $Origin if $data =~ m/\s*\@$/;
 
 	    if ($name !~ /\.$/)
 	    {
@@ -210,17 +243,33 @@ sub _parse ($$) {
 	}
 	elsif ($text =~		# MX
 	       s/
-	       \A(|\*|\s*@|\.|([-\w\d]+(\.[-\w\d]+)*\.?))
-	       \s+ ((\d+) \s+)? ((IN|HESIOD|CHAOS)\s+)?
+	       \A(|\*|\s*\@|\.|([-\w\d]+(\.[-\w\d]+)*\.?))
+	       \s+ ((\d+|IN|HESIOD|CHAOS)\s+)? ((\d+|IN|HESIOD|CHAOS)\s+)?
 	       (MX) \s+ (\d+) \s+ ([-\w\d]+((\.[-\w\d]+)*)?\.?) \s*$
 	       //mxi)
 	{
 	    my $name	= $1;
-	    my $ttl	= length($5) ? $5 :$SoaTTL ||  $GlobalTTL;
-	    my $class	= $7 || 'IN';
 	    my $type	= $8;
 	    my $pref	= $9;
 	    my $data	= $10;
+
+	    my $ct1 = $5;
+	    my $ct2 = $7;
+	    my ($class,$ttl);
+	    if (defined $ct1) {
+		if ($ct1 =~ /^\d+$/) {
+		    $ttl = $ct1;
+		    return undef if defined($ct2) && $ct2 =~ /^\d+$/;
+		    $class = $ct2 || 'IN';
+		} else {
+		    $class = $ct1;
+		    return undef if defined($ct2) && $ct2 !~ /^\d+$/;
+		    $ttl = defined($ct2) ? $ct2 : $GlobalTTL || $SoaTTL;
+		}
+	    } else {
+		$ttl = $GlobalTTL || $SoaTTL;
+		$class = 'IN';
+	    }
 
 	    $name = $Last if not length $name;
 	    $name = $Origin if $name =~ m/\s*\@$/;
@@ -247,16 +296,32 @@ sub _parse ($$) {
 	}
 	elsif ($text =~		# TXT
 	       s/
-	       \A(|\*|\s*@|\.|([-\w\d]+(\.[-\w\d]+)*\.?))
-	       \s+ ((\d+) \s+)? ((IN|HESIOD|CHAOS)\s+)?
+	       \A(|\*|\s*\@|\.|([-\w\d]+(\.[-\w\d]+)*\.?))
+	       \s+ ((\d+|IN|HESIOD|CHAOS)\s+)? ((\d+|IN|HESIOD|CHAOS)\s+)?
 	       (TXT) \s+ (".+?") \s*$
 	       //mxi)
 	{
 	    my $name	= $1;
-	    my $ttl	= length($5) ? $5 : $GlobalTTL || $SoaTTL;
-	    my $class	= $7 || 'IN';
 	    my $type	= $8;
 	    my $data	= $9;
+
+	    my $ct1 = $5;
+	    my $ct2 = $7;
+	    my ($class,$ttl);
+	    if (defined $ct1) {
+		if ($ct1 =~ /^\d+$/) {
+		    $ttl = $ct1;
+		    return undef if defined($ct2) && $ct2 =~ /^\d+$/;
+		    $class = $ct2 || 'IN';
+		} else {
+		    $class = $ct1;
+		    return undef if defined($ct2) && $ct2 !~ /^\d+$/;
+		    $ttl = defined($ct2) ? $ct2 : $GlobalTTL || $SoaTTL;
+		}
+	    } else {
+		$ttl = $GlobalTTL || $SoaTTL;
+		$class = 'IN';
+	    }
 
 	    $name = $Last if not length $name;
 	    $name = $Origin if $name =~ m/\s*\@$/;
@@ -271,16 +336,32 @@ sub _parse ($$) {
 	}
 	elsif ($text =~		# A
 	       s/
-	       \A(|\*|\s*@|\.|[-\w\d]+(((\.[-\w\d]+)*)\.?)?)
-	       \s+ ((\d+)\s+)? ((IN|HESIOD|CHAOS)\s+)? 
+	       \A(|\*|\s*\@|\.|[-\w\d]+(((\.[-\w\d]+)*)\.?)?)
+	       \s+ ((\d+|IN|HESIOD|CHAOS)\s+)? ((\d+|IN|HESIOD|CHAOS)\s+)? 
 	       (A) \s+ (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}) \s*$
 	       //mxi)
 	{
 	    my $name	= $1;
-	    my $ttl	= length($6) ? $6 : $GlobalTTL || $SoaTTL;
-	    my $class	= $8 || 'IN';
 	    my $type	= $9;
 	    my $data	= NetAddr::IP->new($10);
+
+	    my $ct1 = $6;
+	    my $ct2 = $8;
+	    my ($class,$ttl);
+	    if (defined $ct1) {
+		if ($ct1 =~ /^\d+$/) {
+		    $ttl = $ct1;
+		    return undef if defined($ct2) && $ct2 =~ /^\d+$/;
+		    $class = $ct2 || 'IN';
+		} else {
+		    $class = $ct1;
+		    return undef if defined($ct2) && $ct2 !~ /^\d+$/;
+		    $ttl = defined($ct2) ? $ct2 : $GlobalTTL || $SoaTTL;
+		}
+	    } else {
+		$ttl = $GlobalTTL || $SoaTTL;
+		$class = 'IN';
+	    }
 
 	    return undef unless $data;
 
@@ -388,6 +469,19 @@ Parse::RecDescent, but the result was a piece of code much more
 complex than what was really needed. This made me switch the
 implementation to the current regexp engine, which provide faster and
 more maintainable code.
+
+=item 1.01
+
+Calin Medianu pointed out that @ can be in the RHS. New tests were
+written to this end and the code modified to treat this case in a
+manner consistent with BIND/named. This version was not distributed
+by mistake.
+
+=item 1.02
+
+Anton Berezin provided patches for some short-sighted assumptions and
+bugs. Reduced the strictness of the whitespace requirements for
+parsing SOA RRs.
 
 =back
 

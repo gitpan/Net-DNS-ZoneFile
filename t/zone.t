@@ -53,6 +53,8 @@ dns2.acme.com.	1000 IN A	1.2.3.5
 host1		IN A		1.2.3.1
 		IN TXT		"This is the first host"
 
+coyote		IN CNAME	@
+
     ; some comments to make life interesting
 
 };
@@ -100,6 +102,8 @@ BEGIN {
        "Simple A RR" ],
      [ Net::DNS::RR->new("host1.acme.com. 1000 IN TXT \"This is the first host\"")->string,
        "dangling TXT RR" ],
+     [ Net::DNS::RR->new("coyote.acme.com. 1000 IN CNAME acme.com.")->string,
+       "@ on the RHS" ],
 
      );
 };
