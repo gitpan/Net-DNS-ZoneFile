@@ -8,53 +8,54 @@ use IO::File;
 use NetAddr::IP;
 use Net::DNS::RR;
 
-our $VERSION = '1.02';
+our $VERSION = '1.04';
 our $Debug = 0;
-				# Uncomment this if you want to
-				# avoid Parse::RecDescent error
-				# messages globally
+
 # Preloaded methods go here.
 
-sub read ($$) {
+sub read ($$;$$) {
     my $class = shift;		# Void
     my $name = shift;
+    my $root = shift || '.';
+    my $state = shift || { origin => '.', rr => [], ttl => 0, root => $root };
 
     my $fh = new IO::File $name, "r";
 
     return undef unless $fh;
 
-    return $class->readfh($fh);
+    return $class->readfh($fh, $root, $state);
 }
 
-sub readfh ($$) {
+sub readfh ($$;$$) {
     my $class = shift;		# Void
     my $fh = shift;
+    my $root = shift || '.';
+    my $state = shift || { origin => '.', rr => [], ttl => 0, root => $root };
 
     return undef unless $fh;
 
     my $text = join('', grep { s/;.*$// || 1 } <$fh>);
 
-    return $class->parse(\$text);
+    return $class->parse(\$text, $root, $state);
 }
 
-sub _parse ($$) {
+sub _parse ($$;$$) {
     my $class = shift;
     my $text = shift;
-    $text = $$text;
+    my $root = shift || '.';
+    my $state = shift || { origin => '.', rr => [], ttl => 0, root => $root };
     my $otext = undef;
 
-    my @rr = ();
+    $text = $$text;
 
-    our $GlobalTTL = 0;
     our $SoaTTL = 0;
-    our $Origin = '.';
     our $Last = '.';
 
     while (length $text)
     {
 	$text =~ s/;.*$//gm;		# Strip comments
 	$text =~ s/[ \t]+/ /gsm;	# Fold whitespace
-	
+
 	do {
 				# XXX - The s/// produces a warning that I
 				# do not understand on my perl 5.6.0
@@ -77,35 +78,49 @@ sub _parse ($$) {
 
 	if ($text =~		# $ORIGIN
 	    s/
-	    \A\$ORIGIN \s+ 
-	    (\.|([-\w\d]+(\.[-\w\d]+)*\.?)) \s* $
+	    \A\$ORIGIN \s+
+            ([\-\d\w\.]+)(\s+;\s+)?([\d\s\w]+)?$
 	    //mxi)
 	{
-
 	    return undef unless defined $1;
 
 	    my $o = $1;
 
-	    $SoaTTL = $GlobalTTL = 0;
+	    $SoaTTL = $state->{ttl} = 0;
 
 	    if ($o =~ /\.$/) {
-		$Origin = $o;
+		$state->{origin} = $o;
 	    } else {
-		$Origin = $o . "." . $Origin;
+		$state->{origin} = $o . "." . $state->{origin};
 	    }
 
-#	    warn "# \$ORIGIN set to $Origin\n";
+	    warn "# \$ORIGIN set to $state->{origin}\n" if $Debug;
 
+	}
+	elsif ($text =~		# $INCLUDE
+	       s/
+	       \A\$INCLUDE \s+ ([^\s]+) \s*$
+	       //mxi)
+	{
+	    my $inc = $1;
+
+	    substr($inc, 0, 0) = '/' unless $root =~ m!/$!;
+	    substr($inc, 0, 0) = $root;
+
+	    warn "root=$root on include $inc\n" if $Debug;
+
+	    return undef unless defined $inc;
+
+	    return undef unless $class->read($inc, $root, $state);
 	}
 	elsif ($text =~		# $TTL
 	       s/
-	       \A\$TTL \s+ (\d+) \s*$ 
+	       \A\$TTL \s+ (\d+)(;?[\d\s\w]+)?\s*$
 	       //mxi)
 	{
 
 	    return undef unless defined $1;
-
-	    $GlobalTTL = $1;
+	    $state->{ttl} = $1;
 
 	}
 	elsif ($text =~		# $GENERATE
@@ -128,11 +143,11 @@ sub _parse ($$) {
 	}
 	elsif ($text =~		# SOA
 	       s/
-	       \A(|\*|\s*\@|\.|([-\w\d]+(\.[-\w\d]+)*\.?))
-	       \s+ ((\d+|IN|HESIOD|CHAOS) \s+)? ((\d+|IN|HESIOD|CHAOS) \s+)?
-	       (SOA) \s+ ([-\w\d]+(\.[-\w\d]+)*\.) 
-	       \s+ ([-\w\d]+(\.[-\w\d]+)*\.) \s* \(
-	       \s* (\d+) \s+ (\d+) \s+ (\d+) \s+ (\d+) \s+ (\d+) \s* \) \s*$
+               \A(|\*|\s*\@|\.|([-\w\d]+(\.[-\w\d]+)*\.?))
+               \s+ ((\d+|IN|HESIOD|CHAOS) \s+)? ((\d+|IN|HESIOD|CHAOS) \s+)?
+               (SOA) \s+ ([-\w\d]+(\.[-\w\d]+)*\.?) 
+               \s+ ([-\w\d]+(\.[-\w\d]+)*\.) \s* \(
+               \s* (\d+) \s+ (\d+) \s+ (\d+) \s+ (\d+) \s+ (\d+) \s* \) \s*$
 	       //mxi)
 	{
 	    my $name	= $1;
@@ -166,12 +181,12 @@ sub _parse ($$) {
 	    $SoaTTL = $ttl;
 
 	    $name = $Last if not length $name;
-	    $name = $Origin if $name =~ m/\s*\@$/;
+	    $name = $state->{origin} if $name =~ m/\s*\@$/;
 
 	    if ($name !~ /\.$/)
 	    {
-		$name .= "." . $Origin if $Origin ne '.';
-		$name .= "." if $Origin eq '.';
+		$name .= "." . $state->{origin} if $state->{origin} ne '.';
+		$name .= "." if $state->{origin} eq '.';
 	    }
 
 	    $Last = $name;
@@ -185,13 +200,13 @@ sub _parse ($$) {
 					   $d5);
 
 	    return undef unless $rr;
-	    push @rr, $rr;
+	    push @{$state->{rr}}, $rr;
 	}
 	elsif ($text =~		# PTR, CNAME or NS
 	       s/
- 	       \A(|\*|\s*\@|\.|([-\w\d]+(\.[-\w\d]+)*\.?))
+ 	       \A(|\*|\w+|\s*\@|\.|([-\w\d]+(\.[-\w\d]+)*\.?))
  	       \s+ ((\d+|IN|HESIOD|CHAOS)\s+)? ((\d+|IN|HESIOD|CHAOS)\s+)?
-	       (PTR|NS|CNAME) \s+ ([-\w\d]+((\.[-\w\d]+)*)?\.?|@) \s*$
+	       (PTR|NS|CNAME) \s+ ([-\w\d]+((\.[-\w\d]+)*)?\.?|\@) \s*$
 	       //mxi)
 	{
 	    my $name	= $1;
@@ -209,27 +224,27 @@ sub _parse ($$) {
  		} else {
  		    $class = $ct1;
  		    return undef if defined($ct2) && $ct2 !~ /^\d+$/;
- 		    $ttl = defined($ct2) ? $ct2 : $GlobalTTL || $SoaTTL;
+ 		    $ttl = defined($ct2) ? $ct2 : $state->{ttl} || $SoaTTL;
  		}
  	    } else {
- 		$ttl = $GlobalTTL || $SoaTTL;
+ 		$ttl = $state->{ttl} || $SoaTTL;
  		$class = 'IN';
  	    }
  
 	    $name = $Last if not length $name;
-	    $name = $Origin if $name =~ m/\s*\@$/;
-	    $data = $Origin if $data =~ m/\s*\@$/;
+	    $name = $state->{origin} if $name =~ m/\s*\@$/;
+	    $data = $state->{origin} if $data =~ m/\s*\@$/;
 
 	    if ($name !~ /\.$/)
 	    {
-		$name .= "." . $Origin if $Origin ne '.';
-		$name .= "." if $Origin eq '.';
+		$name .= "." . $state->{origin} if $state->{origin} ne '.';
+		$name .= "." if $state->{origin} eq '.';
 	    }
 
 	    if ($data !~ /\.$/)
 	    {
-		$data .= "." . $Origin if $Origin ne '.';
-		$data .= "." if $Origin eq '.';
+		$data .= "." . $state->{origin} if $state->{origin} ne '.';
+		$data .= "." if $state->{origin} eq '.';
 	    }
 
 	    $Last = $name;
@@ -239,11 +254,11 @@ sub _parse ($$) {
 
 	    return undef unless $rr;
 
-	    push @rr, $rr;
+	    push @{$state->{rr}}, $rr;
 	}
 	elsif ($text =~		# MX
 	       s/
-	       \A(|\*|\s*\@|\.|([-\w\d]+(\.[-\w\d]+)*\.?))
+ 	       \A(|\*\.[\w\d\.]+|\*|\s*\@|\.|([-\w\d]+(\.[-\w\d]+)*\.?))
 	       \s+ ((\d+|IN|HESIOD|CHAOS)\s+)? ((\d+|IN|HESIOD|CHAOS)\s+)?
 	       (MX) \s+ (\d+) \s+ ([-\w\d]+((\.[-\w\d]+)*)?\.?) \s*$
 	       //mxi)
@@ -264,26 +279,26 @@ sub _parse ($$) {
 		} else {
 		    $class = $ct1;
 		    return undef if defined($ct2) && $ct2 !~ /^\d+$/;
-		    $ttl = defined($ct2) ? $ct2 : $GlobalTTL || $SoaTTL;
+		    $ttl = defined($ct2) ? $ct2 : $state->{ttl} || $SoaTTL;
 		}
 	    } else {
-		$ttl = $GlobalTTL || $SoaTTL;
+		$ttl = $state->{ttl} || $SoaTTL;
 		$class = 'IN';
 	    }
 
 	    $name = $Last if not length $name;
-	    $name = $Origin if $name =~ m/\s*\@$/;
+	    $name = $state->{origin} if $name =~ m/\s*\@$/;
 
 	    if ($name !~ /\.$/)
 	    {
-		$name .= "." . $Origin if $Origin ne '.';
-		$name .= "." if $Origin eq '.';
+		$name .= "." . $state->{origin} if $state->{origin} ne '.';
+		$name .= "." if $state->{origin} eq '.';
 	    }
 
 	    if ($data !~ /\.$/)
 	    {
-		$data .= "." . $Origin if $Origin ne '.';
-		$data .= "." if $Origin eq '.';
+		$data .= "." . $state->{origin} if $state->{origin} ne '.';
+		$data .= "." if $state->{origin} eq '.';
 	    }
 
 	    $Last = $name;
@@ -292,13 +307,13 @@ sub _parse ($$) {
 					   $type, $pref, $data);
 
 	    return undef unless $rr;
-	    push @rr, $rr;
+	    push @{$state->{rr}}, $rr;
 	}
-	elsif ($text =~		# TXT
+	elsif ($text =~		# TXT or HINFO or AAAA
 	       s/
-	       \A(|\*|\s*\@|\.|([-\w\d]+(\.[-\w\d]+)*\.?))
-	       \s+ ((\d+|IN|HESIOD|CHAOS)\s+)? ((\d+|IN|HESIOD|CHAOS)\s+)?
-	       (TXT) \s+ (".+?") \s*$
+ 	       \A(|\*|\s*\@|\.|([-\w\d]+(\.[-\w\d]+)*\.?)?)
+  	       \s+ ((\d+|IN|HESIOD|CHAOS)\s+)? ((\d+|IN|HESIOD|CHAOS)\s+)?
+ 	       (TXT|HINFO|AAAA) \s+ (".+?"|[:\d\w]+) \s*$
 	       //mxi)
 	{
 	    my $name	= $1;
@@ -316,15 +331,15 @@ sub _parse ($$) {
 		} else {
 		    $class = $ct1;
 		    return undef if defined($ct2) && $ct2 !~ /^\d+$/;
-		    $ttl = defined($ct2) ? $ct2 : $GlobalTTL || $SoaTTL;
+		    $ttl = defined($ct2) ? $ct2 : $state->{ttl} || $SoaTTL;
 		}
 	    } else {
-		$ttl = $GlobalTTL || $SoaTTL;
+		$ttl = $state->{ttl} || $SoaTTL;
 		$class = 'IN';
 	    }
 
 	    $name = $Last if not length $name;
-	    $name = $Origin if $name =~ m/\s*\@$/;
+	    $name = $state->{origin} if $name =~ m/\s*\@$/;
 
 	    $Last = $name;
 
@@ -332,13 +347,13 @@ sub _parse ($$) {
 					   $class, $type, $data);
 
 	    return undef unless $rr;
-	    push @rr, $rr;
+	    push @{$state->{rr}}, $rr;
 	}
 	elsif ($text =~		# A
 	       s/
-	       \A(|\*|\s*\@|\.|[-\w\d]+(((\.[-\w\d]+)*)\.?)?)
-	       \s+ ((\d+|IN|HESIOD|CHAOS)\s+)? ((\d+|IN|HESIOD|CHAOS)\s+)? 
-	       (A) \s+ (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}) \s*$
+ 	       \A(|\*|\*.[-\w\d\.]+|[-\w\d\.]+|\s*\@|\.|[-\w\d]+(((\.[-\w\d]+)*)\.?)?)
+ 	       \s+ ((\d+|IN|HESIOD|CHAOS)\s+)? ((\d+|IN|HESIOD|CHAOS)\s+)?
+  	       (A) \s+ (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}) \s*$
 	       //mxi)
 	{
 	    my $name	= $1;
@@ -356,22 +371,22 @@ sub _parse ($$) {
 		} else {
 		    $class = $ct1;
 		    return undef if defined($ct2) && $ct2 !~ /^\d+$/;
-		    $ttl = defined($ct2) ? $ct2 : $GlobalTTL || $SoaTTL;
+		    $ttl = defined($ct2) ? $ct2 : $state->{ttl} || $SoaTTL;
 		}
 	    } else {
-		$ttl = $GlobalTTL || $SoaTTL;
+		$ttl = $state->{ttl} || $SoaTTL;
 		$class = 'IN';
 	    }
 
 	    return undef unless $data;
 
 	    $name = $Last if not length $name;
-	    $name = $Origin if $name =~ m/\s*\@$/;
+	    $name = $state->{origin} if $name =~ m/\s*\@$/;
 
 	    if ($name !~ /\.$/)
 	    {
-		$name .= "." . $Origin if $Origin ne '.';
-		$name .= "." if $Origin eq '.';
+		$name .= "." . $state->{origin} if $state->{origin} ne '.';
+		$name .= "." if $state->{origin} eq '.';
 	    }
 
 	    $Last = $name;
@@ -380,26 +395,28 @@ sub _parse ($$) {
 					   $type, $data->addr);
 
 	    return undef unless $rr;
-	    push @rr, $rr;
-	}
-	elsif ($text =~ m/\A\s*$/ms) { last; }
-	else { 
-	    warn "Failed to match\n" if $Debug;
+	    push @{$state->{rr}}, $rr;
+	} elsif ($text =~ s/^$//gm) { 
+	    # clear whitespace
+	} else { 
+	    warn "Failed to match: $text\n" if $Debug;
 	    return undef; 
 	}
     }
 
-    return \@rr;
+    return $state->{rr};
 
 }
 
-sub parse ($$) {
+sub parse ($$;$$) {
     my $class = shift;
     my $rtext = shift;
+    my $root = shift || '.';
+    my $state = shift || { origin => '.', rr => [], ttl => 0, root => $root };
 
     return undef unless ref($rtext) eq 'SCALAR';
     my $text = $$rtext;
-    return $class->_parse(\$text);
+    return $class->_parse(\$text, $root, $state);
 }
 
 1;
@@ -414,15 +431,15 @@ Net::DNS::ZoneFile - Perl extension to convert a zone file to a collection of RR
 
   use Net::DNS::ZoneFile;
 
-  my $rrset = Net::DNS::ZoneFile->read($filename);
+  my $rrset = Net::DNS::ZoneFile->read($filename[, $root]);
 
   print $_->string . "\n" for @$rrset;
 
-  my $rrset = Net::DNS::ZoneFile->readfh($fh);
+  my $rrset = Net::DNS::ZoneFile->readfh($fh[, $root]);
 
   # OR
 
-  my $rrset = Net::DNS::ZoneFile->parse($ref_to_myzonefiletext);
+  my $rrset = Net::DNS::ZoneFile->parse($ref_to_myzonefiletext[, $root]);
 
 =head1 DESCRIPTION
 
@@ -436,6 +453,10 @@ C<-E<gt>read()> method, or as a file handle, using the
 C<-E<gt>readfh()> method. If you already have a scalar with the
 contents of your zone file, the most efficient way to parse it is by
 passing a reference to it to the C<-E<gt>parse()> method.
+
+The optional C<$root> parameter, tells the module where to anchor
+B<$INCLUDE> statements found in the zone data. It defaults to the
+current directory.
 
 In case of error, undef will be returned.
 
@@ -482,6 +503,20 @@ by mistake.
 Anton Berezin provided patches for some short-sighted assumptions and
 bugs. Reduced the strictness of the whitespace requirements for
 parsing SOA RRs.
+
+=item 1.03
+
+Added support for a reentrant $INCLUDE. Funs Kessen added support for
+AAAA and HINFO.
+
+=item 1.03_1
+
+Funs Kessen submitted patches to make this module behave more like
+BIND.
+
+=item 1.04
+
+Release of 1.03_1 as stable.
 
 =back
 

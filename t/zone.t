@@ -3,7 +3,7 @@
 use Net::DNS::RR;
 use Net::DNS::ZoneFile;
 
-#$Net::DNS::ZoneFile::Debug = 1;
+# $Net::DNS::ZoneFile::Debug = 1;
 
 my $zone = q{
 $ORIGIN 2.1.in-addr.arpa.
